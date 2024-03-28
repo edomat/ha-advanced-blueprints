@@ -254,6 +254,8 @@ class PvExcessControl:
                 return on_time
             PvExcessControl.on_time_counter = 0
 
+            increase_potential = 0 # How much more power can be used by an appliace and all higher priority appliances
+
             # ----------------------------------- go through each appliance (highest prio to lowest) ---------------------------------------
             # this is for determining which devices can be switched on
             instances = []
@@ -288,10 +290,6 @@ class PvExcessControl:
                               f'OR remaining solar forecast is lower than remaining capacity of home battery. '
                               f'Calculated average excess power based on >> export power <<: {avg_excess_power} W')
 
-                # add instance including calculated excess power to inverted list (priority from low to high)
-                instances.insert(0, {'instance': inst, 'avg_excess_power': avg_excess_power})
-
-
                 # -------------------------------------------------------------------
                 # Determine if appliance can be turned on or current can be increased
                 if _get_state(inst.appliance_switch) == 'on':
@@ -302,6 +300,9 @@ class PvExcessControl:
                         prev_amps = _get_num_state(inst.appliance_current_set_entity, return_on_error=inst.min_current)
                         excess_amps = round(avg_excess_power / (PvExcessControl.grid_voltage * inst.phases), 1) + prev_amps
                         amps = max(inst.min_current, min(excess_amps, inst.max_current))
+                        # Record how much more current can this appliance use - to be reallocated from lower priorities
+                        increase_potential += inst.max_current - amps
+                        log.info(f'{log_prefix} Potential for current increase at and above current priority: {increase_potential}.')
                         if amps > (prev_amps+0.09):
                             _set_value(inst.appliance_current_set_entity, amps)
                             log.info(f'{log_prefix} Setting dynamic current appliance from {prev_amps} to {amps} A per phase.')
@@ -332,21 +333,28 @@ class PvExcessControl:
                     else:
                         log.debug(f'{log_prefix} Average Excess power not high enough to switch on appliance.')
                 # -------------------------------------------------------------------
+                # add instance including calculated excess power to inverted list (priority from low to high)
+                instances.insert(0, {'instance': inst, 'avg_excess_power': avg_excess_power, 'increase_potential': increase_potential})
 
 
             # ----------------------------------- go through each appliance (lowest prio to highest prio) ----------------------------------
             # this is for determining which devices need to be switched off or decreased in current
             prev_consumption_sum = 0
-            for dic in instances:
+            for i, dic in enumerate(instances):
                 inst = dic['instance']
                 avg_excess_power = dic['avg_excess_power'] + prev_consumption_sum
                 log_prefix = f'[{inst.appliance_switch} (Prio {inst.appliance_priority})]'
 
                 # -------------------------------------------------------------------
                 if _get_state(inst.appliance_switch) == 'on':
-                    if avg_excess_power < PvExcessControl.min_excess_power:
-                        log.debug(f'{log_prefix} Average Excess Power ({avg_excess_power} W) is less than minimum excess power '
-                                  f'({PvExcessControl.min_excess_power} W).')
+                    reduction_target = avg_excess_power - instances[i+1]['increase_potential']
+                    if reduction_target < PvExcessControl.min_excess_power:
+                        if avg_excess_power < PvExcessControl.min_excess_power:
+                            log.debug(f'{log_prefix} Average Excess Power ({avg_excess_power} W) is less than minimum excess power '
+                                    f'({PvExcessControl.min_excess_power} W).')
+                        else:
+                            log.debug(f'{log_prefix} Reallocating excess power to higher priority appliances ' +
+                                      f'(increase potential: {instances[i+1]['increase_potential']})')
 
                         # check if current of dyn. curr. appliance can be reduced
                         if inst.dynamic_current_appliance:
@@ -355,7 +363,7 @@ class PvExcessControl:
                                         PvExcessControl.grid_voltage * inst.phases), 1)
                             else:
                                 actual_current = round(_get_num_state(inst.actual_power) / (PvExcessControl.grid_voltage * inst.phases), 1)
-                            diff_current = round(avg_excess_power / (PvExcessControl.grid_voltage * inst.phases), 1)
+                            diff_current = round(reduction_target / (PvExcessControl.grid_voltage * inst.phases), 1)
                             target_current = max(inst.min_current, actual_current + diff_current)
                             log.debug(f'{log_prefix} {actual_current=}A | {diff_current=}A | {target_current=}A')
                             if inst.min_current < target_current < actual_current:
