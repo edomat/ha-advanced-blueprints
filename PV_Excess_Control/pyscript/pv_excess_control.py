@@ -347,7 +347,8 @@ class PvExcessControl:
 
                 # -------------------------------------------------------------------
                 if _get_state(inst.appliance_switch) == 'on':
-                    reduction_target = avg_excess_power - instances[i+1]['increase_potential']
+                    i_p = instances[i+1]['increase_potential'] if i+1 in instances else 0
+                    reduction_target = avg_excess_power - i_p
                     if reduction_target < PvExcessControl.min_excess_power:
                         if avg_excess_power < PvExcessControl.min_excess_power:
                             log.debug(f'{log_prefix} Average Excess Power ({avg_excess_power} W) is less than minimum excess power '
